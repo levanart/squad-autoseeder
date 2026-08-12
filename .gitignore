@@ -1,0 +1,65 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+[Aa]rtifacts/
+[Pp]ublish/
+TestResults/
+BenchmarkDotNet.Artifacts/
+
+# IDE and editor state
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.rsuser
+*.DotSettings.user
+*.code-workspace
+
+# .NET tooling and packages
+*.nupkg
+*.snupkg
+packages/
+.nuget/
+project.lock.json
+project.fragment.lock.json
+artifacts.json
+
+# Compiled and diagnostic files
+*.dll
+*.exe
+*.pdb
+*.cache
+*.tmp
+*.temp
+*.log
+*.dmp
+*.zip
+
+# Publish profiles and signing material
+*.pubxml
+*.pubxml.user
+*.publishproj
+*.pfx
+*.p12
+*.cer
+*.key
+*.pem
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+appsettings.*.json
+secrets.json
+launchSettings.json
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
