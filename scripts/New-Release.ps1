@@ -4,8 +4,6 @@ param(
     [string]$PublishDirectory,
     [string]$Version = "1.0.0",
     [switch]$SkipPublish,
-    [ValidateSet("signed", "unsigned")]
-    [string]$SigningStatus = "unsigned",
     [string]$SourceCommit = ""
 )
 
@@ -113,7 +111,7 @@ finally { $archiveStream.Dispose() }
 $archiveSha256 = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
 
 $manifest = [ordered]@{
-    schemaVersion = 2
+    schemaVersion = 3
     product = "5thMR Autoseeder"
     version = $Version
     sourceCommit = if ($SourceCommit) { $SourceCommit.ToLowerInvariant() } else { $null }
@@ -121,8 +119,6 @@ $manifest = [ordered]@{
     targetFramework = "net10.0-windows"
     selfContained = $true
     singleFile = $true
-    signingStatus = $SigningStatus
-    signed = $SigningStatus -eq "signed"
     artifact = $archiveName
     sha256 = $archiveSha256
 }
@@ -139,4 +135,3 @@ $checksums = @(
 
 Write-Host "Created $archivePath"
 Write-Host "SHA-256 $archiveSha256"
-Write-Host "Signing status: $SigningStatus"

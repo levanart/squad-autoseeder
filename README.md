@@ -78,13 +78,6 @@ dotnet publish .\Autoseeder.Client.csproj `
 
 Push тега строгого вида `vMAJOR.MINOR.PATCH` запускает `.github/workflows/release.yml`. Для тега `v1.4.0` в `origin` должна существовать ветка `release/v1.4.0`, причём тег обязан указывать точно на её вершину. Workflow публикует self-contained single-file сборку `win-x64`, готовит детерминированный ZIP, `SHA256SUMS.txt`, `release-manifest.json` и создаёт черновик GitHub Release.
 
-Для Authenticode-подписи добавьте одновременно два GitHub Actions repository secret:
-
-- `CODE_SIGNING_PFX_BASE64` — PFX/P12 целиком в Base64;
-- `CODE_SIGNING_PFX_PASSWORD` — пароль PFX/P12.
-
-Другие secrets не нужны: `GITHUB_TOKEN` предоставляется GitHub автоматически. Один заполненный signing secret без второго считается ошибкой. Если оба signing secret отсутствуют, релиз собирается без подписи и помечается как `unsigned` в notes и манифесте. Если secrets настроены, любая ошибка подписи или её проверки останавливает релиз.
-
 Полный порядок работы с `main`, `dev` и ветками конкретных релизов описан в [`docs/RELEASES.md`](docs/RELEASES.md). Пустая wildcard-ветка `release/v*.*.*` не создаётся: вместо неё перед каждым релизом создаётся `release/vX.Y.Z`.
 
 ## Как пользоваться

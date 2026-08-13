@@ -99,80 +99,11 @@ jobs:
             throw "Published executable was not found at '$executable'."
           }
 
-      - name: Determine signing mode
-        id: signing
-        shell: pwsh
-        env:
-          CODE_SIGNING_PFX_BASE64: ${{ secrets.CODE_SIGNING_PFX_BASE64 }}
-          CODE_SIGNING_PFX_PASSWORD: ${{ secrets.CODE_SIGNING_PFX_PASSWORD }}
-        run: |
-          $hasPfx = -not [string]::IsNullOrWhiteSpace($env:CODE_SIGNING_PFX_BASE64)
-          $hasPassword = -not [string]::IsNullOrWhiteSpace($env:CODE_SIGNING_PFX_PASSWORD)
-
-          if ($hasPfx -xor $hasPassword) {
-            throw "Configure both CODE_SIGNING_PFX_BASE64 and CODE_SIGNING_PFX_PASSWORD, or configure neither."
-          }
-
-          if ($hasPfx) {
-            "enabled=true" >> $env:GITHUB_OUTPUT
-            "status=signed" >> $env:GITHUB_OUTPUT
-          }
-          else {
-            "enabled=false" >> $env:GITHUB_OUTPUT
-            "status=unsigned" >> $env:GITHUB_OUTPUT
-            Write-Warning "Code-signing secrets are not configured; this draft release will be explicitly marked unsigned."
-          }
-
-      - name: Sign executable
-        if: steps.signing.outputs.enabled == 'true'
-        shell: pwsh
-        env:
-          CODE_SIGNING_PFX_BASE64: ${{ secrets.CODE_SIGNING_PFX_BASE64 }}
-          CODE_SIGNING_PFX_PASSWORD: ${{ secrets.CODE_SIGNING_PFX_PASSWORD }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          $pfxPath = Join-Path $env:RUNNER_TEMP (([System.IO.Path]::GetRandomFileName()) + ".pfx")
-          $executable = Join-Path $env:GITHUB_WORKSPACE "artifacts\publish-win-x64\5thMR.Autoseeder.exe"
-          $pfxBytes = $null
-
-          try {
-            $pfxBytes = [Convert]::FromBase64String($env:CODE_SIGNING_PFX_BASE64)
-            [System.IO.File]::WriteAllBytes($pfxPath, $pfxBytes)
-
-            $kitsRoot = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin"
-            $signTool = Get-ChildItem -LiteralPath $kitsRoot -Filter signtool.exe -File -Recurse |
-              Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
-              Sort-Object { $_.VersionInfo.FileVersionRaw } -Descending |
-              Select-Object -First 1
-            if ($null -eq $signTool) {
-              throw "signtool.exe (x64) was not found on the runner."
-            }
-
-            & $signTool.FullName sign /fd SHA256 /td SHA256 /tr https://timestamp.digicert.com /f $pfxPath /p $env:CODE_SIGNING_PFX_PASSWORD $executable
-            if ($LASTEXITCODE -ne 0) {
-              throw "signtool sign failed with exit code $LASTEXITCODE."
-            }
-
-            & $signTool.FullName verify /pa /v $executable
-            if ($LASTEXITCODE -ne 0) {
-              throw "signtool verification failed with exit code $LASTEXITCODE."
-            }
-          }
-          finally {
-            if ($null -ne $pfxBytes) {
-              [Array]::Clear($pfxBytes, 0, $pfxBytes.Length)
-            }
-            if (Test-Path -LiteralPath $pfxPath) {
-              Remove-Item -LiteralPath $pfxPath -Force
-            }
-          }
-
       - name: Package release assets
         shell: pwsh
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
           RELEASE_COMMIT: ${{ steps.version.outputs.tag_commit }}
-          SIGNING_STATUS: ${{ steps.signing.outputs.status }}
         run: |
           .\scripts\New-Release.ps1 `
             -Version $env:RELEASE_VERSION `
@@ -180,7 +111,6 @@ jobs:
             -OutputDirectory artifacts `
             -PublishDirectory artifacts\publish-win-x64 `
             -SkipPublish `
-            -SigningStatus $env:SIGNING_STATUS `
             -SourceCommit $env:RELEASE_COMMIT
 
       - name: Create or update draft GitHub Release
@@ -189,7 +119,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
-          SIGNING_STATUS: ${{ steps.signing.outputs.status }}
         run: |
           $ErrorActionPreference = "Stop"
           $artifactRoot = Join-Path $env:GITHUB_WORKSPACE "artifacts"
@@ -198,19 +127,10 @@ jobs:
           $checksums = Join-Path $artifactRoot "SHA256SUMS.txt"
           $notes = Join-Path $env:RUNNER_TEMP "release-notes.md"
 
-          if ($env:SIGNING_STATUS -eq "signed") {
-            $signatureNote = "The executable is Authenticode-signed and timestamped."
-          }
-          else {
-            $signatureNote = "The executable is UNSIGNED because code-signing secrets were not configured. Verify SHA256SUMS.txt before distribution."
-          }
-
           @"
           Windows x64 self-contained single-file build for 5thMR Autoseeder $env:RELEASE_VERSION.
 
-          $signatureNote
-
-          See release-manifest.json for machine-readable build and signing metadata.
+          Verify SHA256SUMS.txt before distribution. See release-manifest.json for machine-readable build metadata.
           "@ | Set-Content -LiteralPath $notes -Encoding utf8
 
           $draftState = & gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --json isDraft --jq .isDraft 2>$null
