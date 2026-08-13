@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Windows;
 using System.Windows.Input;
@@ -7,6 +8,8 @@ using System.Windows.Media.Animation;
 using System.Reflection;
 using Autoseeder.Client.Models;
 using Autoseeder.Client.Services;
+using Color = System.Windows.Media.Color;
+using ColorConverter = System.Windows.Media.ColorConverter;
 
 namespace Autoseeder.Client;
 
@@ -15,6 +18,10 @@ public partial class MainWindow : Window
     private readonly AuthService _auth = new();
     private readonly AutoseederHubClient _hub;
     private readonly ClientRuntimeService _runtime = new();
+    private readonly AppLog _log;
+    private readonly TrayIconService _tray;
+    private readonly ScheduledStartService _scheduledStart = new();
+    private readonly ReconnectStateMachine _reconnect = new();
     private readonly ObservableCollection<AutoseederServer> _servers = [];
     private readonly ObservableCollection<string> _logs = [];
     private readonly Queue<double> _cpuHistory = new();
@@ -24,10 +31,15 @@ public partial class MainWindow : Window
     private readonly CancellationTokenSource _hardwareStop = new();
     private HardwareMonitorService? _hardwareMonitor;
     private bool _enabled;
-    private string? _lastOpenedServer;
+    private readonly bool _launchAsScheduled;
+    private bool _exitRequested;
+    private int _exitState;
+    private bool _trayNoticeShown;
 
-    public MainWindow()
+    internal MainWindow(AppLog log, bool launchAsScheduled)
     {
+        _log = log;
+        _launchAsScheduled = launchAsScheduled;
         InitializeComponent();
         ServersList.ItemsSource = _servers;
         LogsList.ItemsSource = _logs;
@@ -37,21 +49,35 @@ public partial class MainWindow : Window
         _hub.Log += message => Dispatcher.Invoke(() => AddLog(message));
         _hub.CommandReceived += HandleRemoteCommandAsync;
         _runtime.ShutdownScheduleChanged += value => Dispatcher.Invoke(() => UpdateShutdownSchedule(value));
+        _log.EntryWritten += entry => Dispatcher.Invoke(() => AppendLogEntry(entry));
+        _tray = new TrayIconService();
+        _tray.ShowRequested += () => Dispatcher.Invoke(ShowFromTray);
+        _tray.StartRequested += () => Dispatcher.Invoke(async () => await StartAsync());
+        _tray.StopRequested += () => Dispatcher.Invoke(async () => await StopAsync());
+        _tray.ExitRequested += () => Dispatcher.Invoke(async () => await ExitAsync());
         UpdateAccount();
         UpdateShutdownSchedule(_runtime.ShutdownAtUtc);
-        Closing += async (_, _) =>
+        ScheduledStartDatePicker.SelectedDate = DateTime.Today;
+        ScheduledStartTimeText.Text = DateTime.Now.AddHours(1).ToString("HH:mm");
+        Closing += OnClosing;
+        Loaded += async (_, _) =>
         {
-            _hardwareStop.Cancel();
-            _hardwareMonitor?.Dispose();
-            _runtime.Dispose();
-            await _hub.DisposeAsync();
+            AddLog("Клиент запущен; файловый журнал активен");
+            if (_launchAsScheduled)
+                await StartFromScheduleAsync();
         };
         StateChanged += (_, _) => ApplyMaximizedBounds();
         _ = MonitorHardwareAsync(_hardwareStop.Token);
     }
 
-    public void HandleProtocolUri(string value) => Dispatcher.Invoke(async () =>
+    public void HandleActivation(string value) => Dispatcher.Invoke(async () =>
     {
+        if (string.Equals(value, "--scheduled-start", StringComparison.OrdinalIgnoreCase))
+        {
+            await StartFromScheduleAsync();
+            return;
+        }
+
         Activate();
         WindowState = WindowState.Normal;
         if (_auth.CompleteLogin(value))
@@ -92,7 +118,7 @@ public partial class MainWindow : Window
     private async Task StopAsync()
     {
         _enabled = false;
-        _lastOpenedServer = null;
+        _reconnect.Clear(AddLog);
         ToggleButton.Content = "Запустить";
         StateText.Text = "Автосидер выключен";
         ActiveBadge.Visibility = Visibility.Collapsed;
@@ -108,12 +134,42 @@ public partial class MainWindow : Window
         foreach (var server in status.Servers.OrderBy(x => x.SeedOrder)) _servers.Add(server);
         var target = status.Servers.FirstOrDefault(x => x.IsSelected);
         TargetText.Text = target is null ? "Сид сейчас не требуется" : $"Цель: {target.Name}";
-        if (!_enabled || target?.JoinUrl is not { Length: > 0 } joinUrl) return;
-        if (string.Equals(status.UserServerKey, target.Key, StringComparison.OrdinalIgnoreCase)) { _lastOpenedServer = null; return; }
-        if (string.Equals(_lastOpenedServer, target.Key, StringComparison.OrdinalIgnoreCase)) return;
-        _lastOpenedServer = target.Key;
-        AddLog($"Подключение к {target.Name}");
-        Process.Start(new ProcessStartInfo { FileName = joinUrl, UseShellExecute = true });
+        if (!_enabled || target is null)
+        {
+            _reconnect.Clear(AddLog);
+            return;
+        }
+
+        if (target.IsCurrentUserPresent)
+        {
+            _reconnect.ShouldOpen(target.Key, true, DateTimeOffset.UtcNow, AddLog);
+            return;
+        }
+
+        if (target.JoinUrl is not { Length: > 0 } joinUrl)
+        {
+            AddLog($"Reconnect: цель {target.Name} назначена, но ссылка подключения ещё не готова");
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        if (!_reconnect.ShouldOpen(target.Key, false, now, AddLog))
+            return;
+
+        try
+        {
+            if (!Uri.TryCreate(joinUrl, UriKind.Absolute, out var uri) ||
+                uri.Scheme is not ("steam" or "https"))
+                throw new InvalidOperationException("Сервер вернул ссылку с неподдерживаемой схемой.");
+            AddLog($"Reconnect: открывается подключение к {target.Name}");
+            Process.Start(new ProcessStartInfo { FileName = uri.AbsoluteUri, UseShellExecute = true });
+            _reconnect.MarkOpened(target.Key, now, AddLog);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or Win32Exception)
+        {
+            _reconnect.MarkFailed(target.Key, now, AddLog);
+            AddLog($"Reconnect: ошибка запуска Steam: {ex.Message}");
+        }
     }
 
     private async Task RunBusy(Func<Task> action, bool resetOnError = false)
@@ -147,9 +203,108 @@ public partial class MainWindow : Window
 
     private void AddLog(string message)
     {
-        _logs.Add($"[{DateTime.Now:HH:mm:ss}]  {message}");
+        _log.Write(message);
+    }
+
+    private void AppendLogEntry(string entry)
+    {
+        _logs.Add(entry);
         while (_logs.Count > 200) _logs.RemoveAt(0);
         LogsList.ScrollIntoView(_logs.LastOrDefault());
+    }
+
+    private async Task StartFromScheduleAsync()
+    {
+        AddLog("Планировщик: получен запуск --scheduled-start");
+        if (_auth.Current is null)
+        {
+            AddLog("Планировщик: автозапуск пропущен — сначала требуется вход через Steam");
+            ShowFromTray();
+            return;
+        }
+
+        if (!_enabled)
+            await StartAsync();
+        if (_enabled)
+        {
+            Hide();
+            AddLog("Планировщик: автосидер запущен, окно скрыто в область уведомлений");
+        }
+    }
+
+    private void ShowFromTray()
+    {
+        Show();
+        WindowState = WindowState.Normal;
+        Activate();
+    }
+
+    private void OnClosing(object? sender, CancelEventArgs e)
+    {
+        if (_exitRequested)
+            return;
+        e.Cancel = true;
+        Hide();
+        AddLog("Окно закрыто; клиент продолжает работать в области уведомлений");
+        if (!_trayNoticeShown)
+        {
+            _trayNoticeShown = true;
+            _tray.ShowHiddenNotice();
+        }
+    }
+
+    private async Task ExitAsync()
+    {
+        if (Interlocked.CompareExchange(ref _exitState, 1, 0) != 0)
+            return;
+
+        var shutdownRequested = false;
+        _exitRequested = true;
+        AddLog("Завершение работы клиента");
+        TryCleanup(_hardwareStop.Cancel, "Не удалось остановить мониторинг оборудования");
+        TryCleanup(() => _hardwareMonitor?.Dispose(), "Не удалось освободить мониторинг оборудования");
+        TryCleanup(_runtime.Dispose, "Не удалось освободить системные службы");
+
+        try
+        {
+            await _hub.DisposeAsync();
+        }
+        catch (Exception ex)
+        {
+            _log.Write(ex, "Не удалось закрыть Hub-соединение");
+        }
+        finally
+        {
+            TryCleanup(_tray.Dispose, "Не удалось удалить значок области уведомлений");
+            TryCleanup(Close, "Не удалось закрыть главное окно");
+            try
+            {
+                System.Windows.Application.Current.Shutdown();
+                shutdownRequested = true;
+            }
+            catch (Exception ex)
+            {
+                _log.Write(ex, "Не удалось завершить приложение");
+            }
+
+            if (!shutdownRequested)
+            {
+                _exitRequested = false;
+                Interlocked.Exchange(ref _exitState, 0);
+            }
+        }
+    }
+
+    private void TryCleanup(Action cleanup, string failureMessage)
+    {
+        try
+        {
+            cleanup();
+        }
+        catch (Exception ex)
+        {
+            _log.Write(ex, failureMessage);
+        }
     }
 
     private void ShowActiveBadge()
@@ -349,6 +504,47 @@ public partial class MainWindow : Window
     }
 
     private void CancelShutdownClick(object sender, RoutedEventArgs e) => _runtime.CancelShutdown();
+
+    private void ScheduleAutoseederClick(object sender, RoutedEventArgs e)
+    {
+        if (_auth.Current is null)
+        {
+            AddLog("Планировщик: сначала войдите через Steam");
+            return;
+        }
+        if (ScheduledStartDatePicker.SelectedDate is not { } date ||
+            !TimeSpan.TryParse(ScheduledStartTimeText.Text, out var time))
+        {
+            AddLog("Планировщик: укажите корректные дату и время запуска");
+            return;
+        }
+
+        var localStart = DateTime.SpecifyKind(date.Date + time, DateTimeKind.Local);
+        try
+        {
+            _scheduledStart.Schedule(localStart, WakeToRunCheckBox.IsChecked == true);
+            ScheduledStartStatusText.Text = $"Запуск запланирован на {localStart:dd.MM.yyyy в HH:mm}";
+            AddLog($"Планировщик: задача создана на {localStart:O}; WakeToRun={WakeToRunCheckBox.IsChecked == true}");
+        }
+        catch (Exception ex) when (ex is ArgumentOutOfRangeException or InvalidOperationException or PlatformNotSupportedException or System.Runtime.InteropServices.COMException)
+        {
+            AddLog($"Планировщик: не удалось создать задачу: {ex.Message}");
+        }
+    }
+
+    private void RemoveScheduledAutoseederClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            _scheduledStart.Remove();
+            ScheduledStartStatusText.Text = "Автозапуск не запланирован";
+            AddLog("Планировщик: задача автозапуска удалена");
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or PlatformNotSupportedException or System.Runtime.InteropServices.COMException)
+        {
+            AddLog($"Планировщик: не удалось удалить задачу: {ex.Message}");
+        }
+    }
 
     private void UpdateShutdownSchedule(DateTime? shutdownAtUtc)
     {
