@@ -2,7 +2,7 @@ param(
     [string]$RuntimeIdentifier = "win-x64",
     [string]$OutputDirectory = "artifacts",
     [string]$PublishDirectory,
-    [string]$Version = "0.1.0",
+    [string]$Version = "1.0.0",
     [switch]$SkipPublish,
     [ValidateSet("signed", "unsigned")]
     [string]$SigningStatus = "unsigned",
