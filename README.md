@@ -72,14 +72,6 @@ dotnet publish .\Autoseeder.Client.csproj `
 
 Файлы создаются в `artifacts\`. Скрипт сортирует содержимое архива и задаёт одинаковые временные метки ZIP-записей. Публикация релиза и доверенная доставка артефакта выполняются отдельно; автоматическое обновление в клиент не встроено.
 
-## Версии и релизы
-
-Версия приложения задаётся свойствами MSBuild `Version`, `AssemblyVersion`, `FileVersion` и `InformationalVersion`. Локальные значения по умолчанию находятся в `Autoseeder.Client.csproj`; release workflow переопределяет их значением тега.
-
-Push тега строгого вида `vMAJOR.MINOR.PATCH` запускает `.github/workflows/release.yml`. Для тега `v1.4.0` в `origin` должна существовать ветка `release/v1.4.0`, причём тег обязан указывать точно на её вершину. Workflow публикует self-contained single-file сборку `win-x64`, готовит детерминированный ZIP, `SHA256SUMS.txt`, `release-manifest.json` и создаёт черновик GitHub Release.
-
-Полный порядок работы с `main`, `dev` и ветками конкретных релизов описан в [`docs/RELEASES.md`](docs/RELEASES.md). Пустая wildcard-ветка `release/v*.*.*` не создаётся: вместо неё перед каждым релизом создаётся `release/vX.Y.Z`.
-
 ## Как пользоваться
 
 1. Запустите приложение. Одновременно работает только один экземпляр клиента.
