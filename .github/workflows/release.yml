@@ -113,7 +113,7 @@ jobs:
             -SkipPublish `
             -SourceCommit $env:RELEASE_COMMIT
 
-      - name: Create or update draft GitHub Release
+      - name: Stage and publish GitHub Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -150,4 +150,9 @@ jobs:
           & gh release upload $env:RELEASE_TAG $archive $manifest $checksums --repo $env:GITHUB_REPOSITORY --clobber
           if ($LASTEXITCODE -ne 0) {
             throw "Could not upload release assets."
+          }
+
+          & gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --draft=false
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not publish the GitHub Release after uploading all assets."
           }
