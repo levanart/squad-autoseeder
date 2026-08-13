@@ -1,0 +1,153 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Validate tag and release branch
+        id: version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tag = $env:GITHUB_REF_NAME
+          if ($tag -cnotmatch '^v(?<version>(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*))$') {
+            throw "Release tag must use the exact vMAJOR.MINOR.PATCH format. Received: $tag"
+          }
+
+          $version = $Matches.version
+          $releaseBranch = "release/$tag"
+          & git fetch --no-tags origin "+refs/heads/${releaseBranch}:refs/remotes/origin/${releaseBranch}"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Required branch '$releaseBranch' does not exist on origin."
+          }
+
+          $tagCommit = (& git rev-list -n 1 $tag).Trim()
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($tagCommit)) {
+            throw "Could not resolve tag '$tag' to a commit."
+          }
+
+          $branchCommit = (& git rev-parse "refs/remotes/origin/${releaseBranch}^{commit}").Trim()
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($branchCommit)) {
+            throw "Could not resolve branch '$releaseBranch' to a commit."
+          }
+
+          if ($tagCommit -cne $branchCommit) {
+            throw "Tag '$tag' points to $tagCommit, but '$releaseBranch' points to $branchCommit. Tag the branch tip."
+          }
+
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag_commit=$tagCommit" >> $env:GITHUB_OUTPUT
+          "release_branch=$releaseBranch" >> $env:GITHUB_OUTPUT
+
+      - name: Restore
+        run: dotnet restore .\Autoseeder.Client.csproj --runtime win-x64
+
+      - name: Publish self-contained single-file application
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $output = Join-Path $env:GITHUB_WORKSPACE "artifacts\publish-win-x64"
+          dotnet publish .\Autoseeder.Client.csproj `
+            --configuration Release `
+            --runtime win-x64 `
+            --self-contained true `
+            --no-restore `
+            --output $output `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:ContinuousIntegrationBuild=true `
+            -p:Deterministic=true `
+            -p:DebugSymbols=false `
+            -p:DebugType=None `
+            -p:Version=$env:RELEASE_VERSION `
+            -p:AssemblyVersion="${env:RELEASE_VERSION}.0" `
+            -p:FileVersion="${env:RELEASE_VERSION}.0" `
+            -p:InformationalVersion=$env:RELEASE_VERSION
+          if ($LASTEXITCODE -ne 0) {
+            throw "dotnet publish failed with exit code $LASTEXITCODE."
+          }
+
+          $executable = Join-Path $output "5thMR.Autoseeder.exe"
+          if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
+            throw "Published executable was not found at '$executable'."
+          }
+
+      - name: Package release assets
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_COMMIT: ${{ steps.version.outputs.tag_commit }}
+        run: |
+          .\scripts\New-Release.ps1 `
+            -Version $env:RELEASE_VERSION `
+            -RuntimeIdentifier win-x64 `
+            -OutputDirectory artifacts `
+            -PublishDirectory artifacts\publish-win-x64 `
+            -SkipPublish `
+            -SourceCommit $env:RELEASE_COMMIT
+
+      - name: Create or update draft GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $artifactRoot = Join-Path $env:GITHUB_WORKSPACE "artifacts"
+          $archive = Join-Path $artifactRoot "5thMR.Autoseeder-$env:RELEASE_VERSION-win-x64.zip"
+          $manifest = Join-Path $artifactRoot "release-manifest.json"
+          $checksums = Join-Path $artifactRoot "SHA256SUMS.txt"
+          $notes = Join-Path $env:RUNNER_TEMP "release-notes.md"
+
+          @"
+          Windows x64 self-contained single-file build for 5thMR Autoseeder $env:RELEASE_VERSION.
+
+          Verify SHA256SUMS.txt before distribution. See release-manifest.json for machine-readable build metadata.
+          "@ | Set-Content -LiteralPath $notes -Encoding utf8
+
+          $draftState = & gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --json isDraft --jq .isDraft 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            if ($draftState.Trim() -cne "true") {
+              throw "Release '$env:RELEASE_TAG' already exists and is not a draft; refusing to replace published assets."
+            }
+            & gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --draft=true --title "5thMR Autoseeder $env:RELEASE_VERSION" --notes-file $notes
+          }
+          else {
+            & gh release create $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --verify-tag --draft --title "5thMR Autoseeder $env:RELEASE_VERSION" --notes-file $notes
+          }
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not create or update the draft GitHub Release."
+          }
+
+          & gh release upload $env:RELEASE_TAG $archive $manifest $checksums --repo $env:GITHUB_REPOSITORY --clobber
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not upload release assets."
+          }

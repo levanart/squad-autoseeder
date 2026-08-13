@@ -10,7 +10,7 @@ internal sealed class ClientRuntimeService : IDisposable
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "5thMR", "Autoseeder", "client-settings.json");
     private readonly object _sync = new();
-    private Timer? _shutdownTimer;
+    private System.Threading.Timer? _shutdownTimer;
 
     public string DeviceId { get; private set; } = Guid.NewGuid().ToString("N");
     public DateTime? ShutdownAtUtc { get; private set; }
@@ -93,7 +93,7 @@ internal sealed class ClientRuntimeService : IDisposable
             Save();
             return;
         }
-        _shutdownTimer = new Timer(async _ =>
+        _shutdownTimer = new System.Threading.Timer(async _ =>
         {
             if (ScheduledAction == "close_squad")
                 await CloseSquadAsync();

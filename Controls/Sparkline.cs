@@ -2,6 +2,11 @@ using System.Collections;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Media;
+using Brush = System.Windows.Media.Brush;
+using Brushes = System.Windows.Media.Brushes;
+using Color = System.Windows.Media.Color;
+using Pen = System.Windows.Media.Pen;
+using Point = System.Windows.Point;
 
 namespace Autoseeder.Client.Controls;
 
@@ -84,7 +89,7 @@ public sealed class Sparkline : FrameworkElement
     private void DrawText(DrawingContext context, string text, Brush brush, double size, Point origin)
     {
         var formatted = new FormattedText(
-            text, CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
+            text, CultureInfo.CurrentCulture, System.Windows.FlowDirection.LeftToRight,
             new Typeface("Segoe UI"), size, brush, VisualTreeHelper.GetDpi(this).PixelsPerDip);
         context.DrawText(formatted, origin);
     }

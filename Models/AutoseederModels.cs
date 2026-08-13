@@ -2,10 +2,6 @@ namespace Autoseeder.Client.Models;
 
 public sealed record AutoseederStatus(
     int SeedThreshold,
-    string? SelectedServerKey,
-    string? JoinUrl,
-    bool IsConnected,
-    string? UserServerKey,
     IReadOnlyCollection<AutoseederServer> Servers);
 
 public sealed record AutoseederServer(
@@ -17,6 +13,7 @@ public sealed record AutoseederServer(
     int SeedThreshold,
     bool ShouldSeed,
     bool IsSelected,
+    bool IsCurrentUserPresent,
     string? JoinUrl,
     string Status)
 {

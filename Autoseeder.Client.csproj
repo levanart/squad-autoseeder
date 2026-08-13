@@ -3,11 +3,17 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>5thMR.Autoseeder</AssemblyName>
     <RootNamespace>Autoseeder.Client</RootNamespace>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <InformationalVersion>$(Version)</InformationalVersion>
+    <Deterministic>true</Deterministic>
   </PropertyGroup>
 
   <ItemGroup>

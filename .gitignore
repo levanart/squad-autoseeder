@@ -40,7 +40,7 @@ artifacts.json
 *.dmp
 *.zip
 
-# Publish profiles and signing material
+# Publish profiles and credential files
 *.pubxml
 *.pubxml.user
 *.publishproj
