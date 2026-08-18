@@ -160,6 +160,13 @@ internal sealed class AutoseederHubClient : IAsyncDisposable
                     Log?.Invoke("Hub: фоновое восстановление завершено");
                     return;
                 }
+                catch (SessionExpiredException ex)
+                {
+                    // Токены отозваны — переподключаться нечем, ждём повторного входа пользователя.
+                    _seedingRequested = false;
+                    Log?.Invoke($"Hub: восстановление прекращено — {ex.Message}");
+                    return;
+                }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     Log?.Invoke($"Hub: попытка восстановления {attempt} не удалась: {ex.GetType().Name}: {ex.Message}");
