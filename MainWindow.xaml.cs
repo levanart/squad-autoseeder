@@ -48,6 +48,7 @@ public partial class MainWindow : Window
         _hub.StatusChanged += status => Dispatcher.Invoke(() => ApplyStatus(status));
         _hub.Log += message => Dispatcher.Invoke(() => AddLog(message));
         _hub.CommandReceived += HandleRemoteCommandAsync;
+        _auth.SessionExpired += () => Dispatcher.InvokeAsync(async () => await HandleSessionExpiredAsync());
         _runtime.ShutdownScheduleChanged += value => Dispatcher.Invoke(() => UpdateShutdownSchedule(value));
         _log.EntryWritten += entry => Dispatcher.Invoke(() => AppendLogEntry(entry));
         _tray = new TrayIconService();
@@ -170,6 +171,16 @@ public partial class MainWindow : Window
             _reconnect.MarkFailed(target.Key, now, AddLog);
             AddLog($"Reconnect: ошибка запуска Steam: {ex.Message}");
         }
+    }
+
+    private async Task HandleSessionExpiredAsync()
+    {
+        AddLog("Сессия истекла — требуется повторный вход через Steam");
+        if (_enabled)
+            await StopAsync();
+        _servers.Clear();
+        UpdateAccount();
+        ShowFromTray();
     }
 
     private async Task RunBusy(Func<Task> action, bool resetOnError = false)

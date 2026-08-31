@@ -13,6 +13,9 @@ internal sealed class AuthService
     private readonly TokenStore _store = new();
     public AuthState? Current { get; private set; }
 
+    /// <summary>Сессия отозвана сервером — требуется повторный вход. Вызывается из фонового потока.</summary>
+    public event Action? SessionExpired;
+
     public AuthService() => Current = _store.Load();
 
     public void StartLogin() => Process.Start(new ProcessStartInfo
@@ -41,12 +44,10 @@ internal sealed class AuthService
 
     public async Task<string> GetValidAccessToken(CancellationToken cancellationToken = default)
     {
-        var state = Current ?? throw new InvalidOperationException("Требуется вход через Steam.");
-        using var claims = ReadClaims(state.AccessToken);
-        var expiresAt = claims.RootElement.TryGetProperty("exp", out var exp)
-            ? DateTimeOffset.FromUnixTimeSeconds(exp.GetInt64()).UtcDateTime
-            : DateTime.MinValue;
-        if (expiresAt > DateTime.UtcNow.AddMinutes(2)) return state.AccessToken;
+        var state = Current ?? throw new SessionExpiredException("Требуется вход через Steam.");
+        // Нечитаемый access-токен не считаем фатальным: пробуем обновиться по refresh-токену.
+        if (TryGetExpiry(state.AccessToken) is { } expiresAt && expiresAt > DateTime.UtcNow.AddMinutes(2))
+            return state.AccessToken;
 
         var cookies = new CookieContainer();
         var baseUri = new Uri(BaseUrl);
@@ -54,17 +55,52 @@ internal sealed class AuthService
         using var handler = new HttpClientHandler { CookieContainer = cookies };
         using var client = new HttpClient(handler);
         using var response = await client.PostAsync($"{BaseUrl}/api/auth/refresh", null, cancellationToken);
+
+        // 401/403 — refresh-токен отозван или просрочен: повторять бессмысленно, сессию надо сбросить.
+        // Прочие коды (5xx, 429) считаем временными и сессию сохраняем, чтобы пережить перезапуск сервера.
+        if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            InvalidateSession();
+            throw new SessionExpiredException("Сессия истекла — войдите через Steam заново.");
+        }
+
         response.EnsureSuccessStatusCode();
         var access = cookies.GetCookies(baseUri)["discord5thmr.auth"]?.Value;
         var refresh = cookies.GetCookies(baseUri)["discord5thmr.refresh"]?.Value;
         if (string.IsNullOrWhiteSpace(access) || string.IsNullOrWhiteSpace(refresh))
-            throw new InvalidOperationException("Сервер не вернул обновлённую сессию.");
+        {
+            InvalidateSession();
+            throw new SessionExpiredException("Сервер не вернул обновлённую сессию.");
+        }
         Current = state with { AccessToken = access, RefreshToken = refresh };
         _store.Save(Current);
         return access;
     }
 
     public void Logout() { Current = null; _store.Clear(); }
+
+    private void InvalidateSession()
+    {
+        if (Current is null) return;
+        Current = null;
+        _store.Clear();
+        SessionExpired?.Invoke();
+    }
+
+    private static DateTime? TryGetExpiry(string token)
+    {
+        try
+        {
+            using var claims = ReadClaims(token);
+            return claims.RootElement.TryGetProperty("exp", out var exp)
+                ? DateTimeOffset.FromUnixTimeSeconds(exp.GetInt64()).UtcDateTime
+                : null;
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or FormatException or JsonException)
+        {
+            return null;
+        }
+    }
 
     private static JsonDocument ReadClaims(string token)
     {
@@ -75,3 +111,6 @@ internal sealed class AuthService
         return JsonDocument.Parse(Encoding.UTF8.GetString(Convert.FromBase64String(payload)));
     }
 }
+
+/// <summary>Сессия недействительна и не восстанавливается автоматически — нужен повторный вход через Steam.</summary>
+internal sealed class SessionExpiredException(string message) : Exception(message);

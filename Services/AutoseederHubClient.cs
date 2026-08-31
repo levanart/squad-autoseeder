@@ -60,7 +60,10 @@ internal sealed class AutoseederHubClient : IAsyncDisposable
             .WithAutomaticReconnect(new[] { TimeSpan.Zero, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(15) })
             .Build();
         connection.On<AutoseederStatus>("StatusUpdate", status => StatusChanged?.Invoke(status));
-        connection.On("CacheUpdate", async () => await RefreshAsync());
+        // The server pushes a fresh StatusUpdate the instant the live state a seeder's target
+        // depends on actually changes (ServerStateBroadcastService.PushSeederStatusesAsync) -
+        // reacting to CacheUpdate here too used to mean re-fetching the full status on every
+        // unrelated server tick, for no benefit over just waiting for StatusUpdate.
         connection.On<ClientCommandMessage>("ClientCommand", async command =>
         {
             if (CommandReceived is not null)
@@ -158,6 +161,13 @@ internal sealed class AutoseederHubClient : IAsyncDisposable
                     await ConnectAsync();
                     await InvokeStartSeedingAsync();
                     Log?.Invoke("Hub: фоновое восстановление завершено");
+                    return;
+                }
+                catch (SessionExpiredException ex)
+                {
+                    // Токены отозваны — переподключаться нечем, ждём повторного входа пользователя.
+                    _seedingRequested = false;
+                    Log?.Invoke($"Hub: восстановление прекращено — {ex.Message}");
                     return;
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
